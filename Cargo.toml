@@ -1,0 +1,15 @@
+[package]
+name = "h264"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.86"
+memmap = "0.7.0"
+simd_iter = { git = "https://github.com/friendlymatthew/simd_iter" }
+
+
+[dev-dependencies]
+zip = "2.1.3"
