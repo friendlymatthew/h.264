@@ -1,8 +1,13 @@
+use std::simd::Simd;
+
 /// `NalUnit` is a syntax structure containing an indication of the type of data to follow and bytes
 /// containing that data in the form of an `RBSP` interspersed as necessary with
 /// `EMULATION_PREVENTION_BYTE`.
 #[derive(Debug, Copy, Clone)]
 pub struct NalUnit {
+    offset: usize,
+    num_bytes: usize,
+
     /// `forbidden_zero_bit` shall be equal to 0.
     forbidden_zero_bit: bool,
 
@@ -39,10 +44,16 @@ impl NalUnit {
     /// to each `NALUnit`. The location of a `START_CODE_PREFIX` can be used by a decoder to identify
     /// the beginning of a new `NAL unit` and the end of a previous NAL unit. Emulation of start code
     /// prefixes is prevented within NAL units by the inclusion of `EMULATION_PREVENTION_BYTES`.
-    const START_CODE_PREFIX: [u8; 3] = [0x00, 0x00, 0x01];
+    pub(crate) const START_CODE_PREFIX: [u8; 3] = [0x00, 0x00, 0x01];
 
     /// A byte equal to 0x03 that may be present within a `NalUnit`.
     /// The presence of this byte ensures no sequence of consecutive byte-aligned bytes in the
     /// `NALUnit` contains a `START_CODE_PREFIX`.
     const EMULATION_PREVENTION_BYTE: u8 = 0x03;
+
+    pub(crate) fn start_code_prefix_simd_array() -> Simd<u8, 4> {
+        let mut prefix_array = [0x00; 4];
+        prefix_array[..3].copy_from_slice(&Self::START_CODE_PREFIX);
+        Simd::from_array(prefix_array)
+    }
 }
