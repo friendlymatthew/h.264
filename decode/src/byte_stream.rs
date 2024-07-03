@@ -1,9 +1,7 @@
 use std::simd::{LaneCount, SupportedLaneCount};
 use std::simd::prelude::*;
 
-use anyhow::{anyhow, Result};
-
-use crate::nal_unit::NalUnit;
+use crate::errors::ByteStreamError;
 
 /// `ByteStream` is an encapsulation of a NAL unit stream containing `START_CODE_PREFIX` and `NalUnit`.
 pub struct ByteStream<'a> {
@@ -13,63 +11,26 @@ pub struct ByteStream<'a> {
 
 impl<'a> ByteStream<'a> {
     /// `data` must be an ordered stream of bytes consisting of a sequence of byte stream `NalUnit` syntax structures.
-    fn new(data: &'a [u8]) -> Self {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
         Self { data, cursor: 0 }
     }
 
-    // `read` is a scalar implementation of the byte stream NAL unit decoding process
-    fn read(&mut self) -> Result<()> {
+    pub(crate) fn process(&mut self) -> Result<(), ByteStreamError> {
         self.pre_process::<64>()?;
-
-        while self.cursor < self.data.len() {
-            debug_assert!(
-                Simd::from_array([
-                    self.data[self.cursor],
-                    self.data[self.cursor + 1],
-                    self.data[self.cursor + 2],
-                    self.data[self.cursor + 3]
-                ])
-                .simd_eq(Simd::from_array([0x00, 0x00, 0x00, 0x01]))
-                .all(),
-                "Expected the next four bytes in the bytestream form the four-byte sequence 0x00, 0x00, 0x00, 0x01. Got: {:?}", &self.data[self.cursor..self.cursor + 4]
-            );
-
-            self.cursor += 4;
-
-            debug_assert_eq!(
-                self.data[self.cursor],
-                0x00,
-               "Expected the next byte in the byte stream to be a zero_byte syntax element. Got: {:?}", &self.data[self.cursor]
-            );
-
-            self.cursor += 1;
-
-            debug_assert!(
-                NalUnit::start_code_prefix_simd_array()
-                .simd_eq(Simd::from_array([
-                        self.data[self.cursor],
-                        self.data[self.cursor + 1],
-                        self.data[self.cursor + 2],
-                        0x00,
-                    ]))
-                    .all(),
-                "Expected the next three-byte sequence to be the NalUnit start code prefix. Got: {:?}", &self.data[self.cursor..self.cursor + 3]
-            );
-
-            self.cursor += 3;
-        }
 
         Ok(())
     }
 
-    fn pre_process<const N: usize>(&mut self) -> Result<()>
+    fn pre_process<const N: usize>(&mut self) -> Result<(), ByteStreamError>
     where
         LaneCount<N>: SupportedLaneCount,
     {
         let to_find = [0x00, 0x00, 0x00, 0x01];
 
         if to_find.len() > N {
-            return Err(anyhow!("provide a LaneCount number that is greater than 4"));
+            return Err(ByteStreamError::InvalidLaneCount(
+                "matching. provide a number that is greater than 4".to_string(),
+            ));
         }
 
         // 1. extracts and discards each 0x00 syntax element if present,
@@ -105,7 +66,7 @@ impl<'a> ByteStream<'a> {
                 .simd_eq(Simd::splat(to_find[3]));
 
             let mut matches = m1 & m2 & m3 & m4;
-            while let Some(rel_index) = matches.first_set() {
+            if let Some(rel_index) = matches.first_set() {
                 matches.set(rel_index, false);
                 self.cursor += rel_index;
                 return Ok(());
@@ -123,9 +84,7 @@ impl<'a> ByteStream<'a> {
             self.cursor += N - (to_find.len() - 1);
         }
 
-        Err(anyhow!(
-            "reached end of bytestream and unable to find `0x00000001`."
-        ))
+        Err(ByteStreamError::PreProcessTerminationMarkerNotFound)
     }
 }
 
@@ -134,7 +93,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_preprocess_basic() -> Result<()> {
+    fn test_preprocess_basic() -> Result<(), ByteStreamError> {
         let data = vec![
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 8,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 8,
@@ -149,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn test_preprocess_err() -> Result<()> {
+    fn test_preprocess_err() -> Result<(), ByteStreamError> {
         let data = vec![
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
