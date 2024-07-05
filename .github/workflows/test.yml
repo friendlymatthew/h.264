@@ -1,4 +1,4 @@
-name: Test 
+name: Test
 
 on:
   push:
@@ -21,17 +21,5 @@ jobs:
         run: rustup install nightly
       - name: Use Rust nightly
         run: rustup default nightly
-      - name: Install unzip utility
-        run: sudo apt-get install -y unzip
-      - name: Unzip mock data
-        run: unzip gravity_2k-trailer.zip
-      - name: Build
-        run: cargo build --verbose
-      - name: Pull mock data
-        run: cd hpull
-      - name: Run hpull
-        run:  hpull --file-path ../gravity_2k-trailer.mp4
-      - name: Back
-        run: cd ..
       - name: Run tests
         run: cargo test --verbose
