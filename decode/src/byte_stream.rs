@@ -15,7 +15,7 @@ impl<'a> ByteStream<'a> {
         Self { data, cursor: 0 }
     }
 
-    pub(crate) fn process(&mut self) -> Result<(), ByteStreamError> {
+    pub(crate) fn process(&mut self) -> Result<Vec<(usize, usize)>, ByteStreamError> {
         self.preprocess::<64>()?;
 
         let mut nal_units = vec![];
@@ -42,63 +42,47 @@ impl<'a> ByteStream<'a> {
             self.cursor += 4;
             let mut num_bytes_in_nal_unit = (self.cursor, 0);
 
+            // todo this second scan can be a lot better using 64 lanes
             while self.cursor < self.data.len() {
-                if self.cursor == self.data.len() - 1 {
-                    num_bytes_in_nal_unit.1 = self.cursor - num_bytes_in_nal_unit.0;
-                    nal_units.push(num_bytes_in_nal_unit);
-                    break;
-                }
-
-                if self.cursor + 3 < self.data.len() {
-                    let next_three_bytes = Simd::from_array([
+                let t1 = self.data.len() - 1 == self.cursor;
+                let t2 = self.cursor + 3 < self.data.len() && {
+                    let simd_chunk = Simd::from_array([
                         self.data[self.cursor],
                         self.data[self.cursor + 1],
                         self.data[self.cursor + 2],
                         0x00,
                     ]);
-                    let (m1, m2) = (
-                        Simd::from_array([0x00, 0x00, 0x01, 0x00]),
-                        Simd::splat(0x00),
-                    );
 
-                    if next_three_bytes.simd_eq(m1).all() || next_three_bytes.simd_eq(m2).all() {
-                        num_bytes_in_nal_unit.1 = self.cursor - num_bytes_in_nal_unit.0;
-                        self.cursor += 3;
+                    simd_chunk
+                        .simd_eq(Simd::from_array([0x00, 0x00, 0x01, 0x00]))
+                        .all()
+                        || simd_chunk.simd_eq(Simd::splat(0x00)).all()
+                };
 
-                        while self.cursor + 4 < self.data.len() {
-                            let next_four_chunk =
-                                Simd::from_slice(&self.data[self.cursor..self.cursor + 4]);
-
-                            let next_batch_mask =
-                                next_four_chunk.simd_eq(Simd::from_array([0x00, 0x00, 0x00, 0x01]));
-
-                            if next_batch_mask.all() {
-                                break;
-                            }
-
-                            if let Some(rel_index) = next_batch_mask.first_set() {
-                                if rel_index != 3 {
-                                    if self.data[self.cursor + 3] != 0x00 {
-                                        return Err(ByteStreamError::UnexpectedByte(
-                                            format!(
-                                                "{:?}",
-                                                self.data[self.cursor..self.cursor + 4].to_vec()
-                                            ),
-                                            "0x00".to_string(),
-                                        ));
-                                    }
-                                }
-                            }
-
-                            self.cursor += 4;
-                        }
-                        break;
+                if t1 || t2 {
+                    num_bytes_in_nal_unit.1 = self.cursor - num_bytes_in_nal_unit.0;
+                    if t1 {
+                        num_bytes_in_nal_unit.1 += 1;
                     }
+                    break;
                 }
+
+                self.cursor += 1;
+            }
+
+            nal_units.push(num_bytes_in_nal_unit);
+            self.cursor += 3;
+
+            while self.cursor + 4 < self.data.len()
+                && !Simd::from_slice(&self.data[self.cursor..self.cursor + 4])
+                    .simd_eq(Simd::from_array([0x00, 0x00, 0x00, 0x01]))
+                    .all()
+            {
+                self.cursor += 1;
             }
         }
 
-        Ok(())
+        Ok(nal_units)
     }
 
     fn preprocess<const N: usize>(&mut self) -> Result<(), ByteStreamError>
@@ -197,6 +181,33 @@ mod tests {
 
         let mut bs = ByteStream::new(&data);
         assert!(bs.preprocess::<4>().is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_process() -> Result<(), ByteStreamError> {
+        let data = [
+            0x00, 0x00, 0x00, 0x01, // start clause
+            0x32, 0x032, 0x032, 0x34, 0x032, 0x56, 0x02, 0x32, // fluff 1
+            0x00, 0x00, 0x00, // end clause
+            0x00, 0x00, 0x00, 0x00, 0x00, // trailing_fluff
+            0x00, 0x00, 0x00, 0x01, // start clause
+            0x02, // fluff
+            0x00, 0x00, 0x01, // end clause
+            0x00, 0x00, 0x00, 0x01, // start clause
+            0x03, // fluff
+                  // end clause
+        ];
+
+        let mut bs = ByteStream::new(&data);
+        let nal_units = bs.process()?;
+
+        assert_eq!(nal_units.len(), 3);
+        assert_eq!(vec![(4, 8), (24, 1), (32, 1)], nal_units);
+        assert_eq!(data[4], 0x32);
+        assert_eq!(data[24], 0x02);
+        assert_eq!(data[32], 0x03);
 
         Ok(())
     }
