@@ -4,10 +4,14 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ByteStreamError {
-    #[error(
-        "Decoder unable to find the four-byte sequence 0x00 00 00 01 to signal end of preprocess and commence step-wise process."
-    )]
-    PreProcessTerminationMarkerNotFound,
+    #[error("Expected {expected:?}. Got: {got:?}.")]
+    IncorrectByteSequence { expected: String, got: String },
+
+    #[error("Unexpected halt to the byte stream occurred")]
+    UnexpectedTermination(String),
+
+    #[error("Expected the following pattern")]
+    MisalignedIndices(String),
 
     #[error("Invalid lane count for following workload: {0}")]
     InvalidLaneCount(String),
@@ -15,8 +19,8 @@ pub enum ByteStreamError {
     #[error("the data for key `{0}` is not available")]
     Redaction(String),
 
-    #[error("invalid header (expected {expected:?}, found {found:?})")]
-    InvalidHeader { expected: String, found: String },
+    #[error("Unexpected byte in byte stream sequence {0} {1}")]
+    UnexpectedByte(String, String),
 }
 
 #[derive(Error, Debug)]

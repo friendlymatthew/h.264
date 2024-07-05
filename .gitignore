@@ -1,2 +1,4 @@
 /target
-gravity.mp4
+# Ignore all .mp4 files
+*.mp4
+

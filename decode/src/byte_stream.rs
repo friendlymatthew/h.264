@@ -16,12 +16,92 @@ impl<'a> ByteStream<'a> {
     }
 
     pub(crate) fn process(&mut self) -> Result<(), ByteStreamError> {
-        self.pre_process::<64>()?;
+        self.preprocess::<64>()?;
+
+        let mut nal_units = vec![];
+
+        while self.cursor < self.data.len() {
+            // check the next four bytes in the bitstream
+            if self.cursor + 4 >= self.data.len() {
+                return Err(ByteStreamError::UnexpectedTermination(
+                    "reached end of bitstream".to_string(),
+                ));
+            }
+
+            // 1. the next four bytes in the bitstream form the four-byte sequence 0x00 00 00 01
+            let mut first_four_bytes = !Simd::from_slice(&self.data[self.cursor..self.cursor + 4])
+                .simd_eq(Simd::from_array([0x00, 0x00, 0x00, 0x01]));
+
+            if let Some(_) = first_four_bytes.first_set() {
+                return Err(ByteStreamError::IncorrectByteSequence {
+                    expected: "0x00 0x00 0x00 0x01".to_string(),
+                    got: format!("{:?}", self.data[self.cursor..self.cursor + 4].to_vec()),
+                });
+            }
+
+            self.cursor += 4;
+            let mut num_bytes_in_nal_unit = (self.cursor, 0);
+
+            while self.cursor < self.data.len() {
+                if self.cursor == self.data.len() - 1 {
+                    num_bytes_in_nal_unit.1 = self.cursor - num_bytes_in_nal_unit.0;
+                    nal_units.push(num_bytes_in_nal_unit);
+                    break;
+                }
+
+                if self.cursor + 3 < self.data.len() {
+                    let next_three_bytes = Simd::from_array([
+                        self.data[self.cursor],
+                        self.data[self.cursor + 1],
+                        self.data[self.cursor + 2],
+                        0x00,
+                    ]);
+                    let (m1, m2) = (
+                        Simd::from_array([0x00, 0x00, 0x01, 0x00]),
+                        Simd::splat(0x00),
+                    );
+
+                    if next_three_bytes.simd_eq(m1).all() || next_three_bytes.simd_eq(m2).all() {
+                        num_bytes_in_nal_unit.1 = self.cursor - num_bytes_in_nal_unit.0;
+                        self.cursor += 3;
+
+                        while self.cursor + 4 < self.data.len() {
+                            let next_four_chunk =
+                                Simd::from_slice(&self.data[self.cursor..self.cursor + 4]);
+
+                            let next_batch_mask =
+                                next_four_chunk.simd_eq(Simd::from_array([0x00, 0x00, 0x00, 0x01]));
+
+                            if next_batch_mask.all() {
+                                break;
+                            }
+
+                            if let Some(rel_index) = next_batch_mask.first_set() {
+                                if rel_index != 3 {
+                                    if self.data[self.cursor + 3] != 0x00 {
+                                        return Err(ByteStreamError::UnexpectedByte(
+                                            format!(
+                                                "{:?}",
+                                                self.data[self.cursor..self.cursor + 4].to_vec()
+                                            ),
+                                            "0x00".to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+
+                            self.cursor += 4;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
 
-    fn pre_process<const N: usize>(&mut self) -> Result<(), ByteStreamError>
+    fn preprocess<const N: usize>(&mut self) -> Result<(), ByteStreamError>
     where
         LaneCount<N>: SupportedLaneCount,
     {
@@ -52,8 +132,7 @@ impl<'a> ByteStream<'a> {
 
             let m1 = simd_chunk.simd_eq(Simd::splat(to_find[0]));
             if !m1.any() {
-                self.cursor += N - (to_find.len() - 1);
-                continue;
+                panic!("no trailing zeros exist at all. Are you sure this is a h264 file?");
             }
             let m2 = simd_chunk
                 .rotate_elements_left::<1>()
@@ -84,7 +163,9 @@ impl<'a> ByteStream<'a> {
             self.cursor += N - (to_find.len() - 1);
         }
 
-        Err(ByteStreamError::PreProcessTerminationMarkerNotFound)
+        Err(ByteStreamError::UnexpectedTermination(
+            "reached end of bitstream during preprocessing.".to_string(),
+        ))
     }
 }
 
@@ -101,7 +182,7 @@ mod tests {
         ];
 
         let mut bs = ByteStream::new(&data);
-        bs.pre_process::<8>()?;
+        bs.preprocess::<8>()?;
 
         assert_eq!(bs.cursor, 13);
         Ok(())
@@ -115,7 +196,7 @@ mod tests {
         ];
 
         let mut bs = ByteStream::new(&data);
-        assert!(bs.pre_process::<4>().is_err());
+        assert!(bs.preprocess::<4>().is_err());
 
         Ok(())
     }
